@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { AppLayer, UserAccount, SystemAccount, ExperimentResult, ActiveExperimentState, ExperimentConfig, ExperimentPreset, Toast, NotificationItem } from './types';
 import { NAV_ITEMS } from './constants';
@@ -9,59 +8,57 @@ import EconomyLayer from './layers/EconomyLayer';
 import ExperimentLayer from './layers/ExperimentLayer';
 import LibraryLayer from './layers/LibraryLayer';
 import PresetLayer from './layers/PresetLayer';
-import { LayoutDashboard, Bell, CheckCircle, AlertTriangle, X, Trash2, Info } from 'lucide-react';
+import { LayoutDashboard, Bell, CheckCircle, AlertTriangle, X, Info, ChevronRight } from 'lucide-react';
 
 /**
- * メインアプリケーションコンポーネント
- * アプリケーション全体のレイアウト、ナビゲーション、およびグローバルな状態管理を担当します。
- * 各レイヤー（機能画面）はここで条件分岐によりレンダリングされます。
+ * App Component
+ * 
+ * アプリケーションのエントリーポイント。
+ * レイアウトの骨組み（Sidebar, Header, Main Content）を定義し、
+ * 状態管理（ユーザー、システムアカウント、実験結果）を行います。
+ * 
+ * @design: 全体的にフラットでモダンな構成。サイドバーは視覚的に分離せず、
+ * コンテンツの一部のように見せることで広がりを持たせています。
  */
 const App: React.FC = () => {
-  // 現在表示中のレイヤー
+  // --- State Management ---
   const [activeLayer, setActiveLayer] = useState<AppLayer>(AppLayer.MONITORING);
+  
+  // Infrastructure State
+  const [deployedNodeCount, setDeployedNodeCount] = useState<number>(5);
+  const [isDockerBuilt, setIsDockerBuilt] = useState<boolean>(false);
 
-  // --- Global State: Infrastructure (インフラ状態) ---
-  const [deployedNodeCount, setDeployedNodeCount] = useState<number>(5); // 稼働中のDataChainノード数
-  const [isDockerBuilt, setIsDockerBuilt] = useState<boolean>(false);    // Dockerイメージビルド済みフラグ
-
-  // --- Global State: Economy (経済状態) ---
+  // Economy State
   const [users, setUsers] = useState<UserAccount[]>(generateMockUsers());
   const [systemAccounts, setSystemAccounts] = useState<SystemAccount[]>(generateSystemAccounts(5));
 
-  // デプロイ済みノード数が変更された場合、システムアカウント（Relayer）も同期して増減させる
+  // Library State
+  const [results, setResults] = useState<ExperimentResult[]>(generateMockResults());
+
+  // Preset State
+  const [presets, setPresets] = useState<ExperimentPreset[]>(generateMockPresets());
+
+  // Notification State
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [isNotificationOpen, setIsNotificationOpen] = useState(false);
+  const notificationRef = useRef<HTMLDivElement>(null);
+
+  // --- Effects ---
+  
+  // ノード数変更時のRelayer同期
   useEffect(() => {
       setSystemAccounts(prev => {
           const millionaire = prev.find(a => a.type === 'faucet_source');
-          // 現在のノード数に基づいてRelayerアカウントを再生成
           const newAccounts = generateSystemAccounts(deployedNodeCount);
           if (millionaire) {
-              // Millionaireアカウントの残高は維持する
               newAccounts[0].balance = millionaire.balance;
           }
           return newAccounts;
       });
   }, [deployedNodeCount]);
 
-  // --- Global State: Library (実験結果) ---
-  const [results, setResults] = useState<ExperimentResult[]>(generateMockResults());
-
-  // --- Global State: Presets (保存済み設定) ---
-  const [presets, setPresets] = useState<ExperimentPreset[]>(generateMockPresets());
-
-  // --- Global State: Active Experiment (実行状態) ---
-  // ※現在は主にExperimentLayer内で完結しているが、将来的な拡張のため保持
-  const [experimentState, setExperimentState] = useState<ActiveExperimentState>({
-    isRunning: false,
-    statusMessage: "",
-  });
-
-  // --- Global State: Notifications (通知) ---
-  const [toasts, setToasts] = useState<Toast[]>([]); // 画面右下のトースト通知
-  const [notifications, setNotifications] = useState<NotificationItem[]>([]); // ベルアイコンの通知履歴
-  const [isNotificationOpen, setIsNotificationOpen] = useState(false);
-  const notificationRef = useRef<HTMLDivElement>(null);
-
-  // 通知ドロップダウンの外側クリック検知
+  // クリックアウトサイド検知（通知メニュー用）
   useEffect(() => {
       const handleClickOutside = (event: MouseEvent) => {
           if (notificationRef.current && !notificationRef.current.contains(event.target as Node)) {
@@ -72,73 +69,51 @@ const App: React.FC = () => {
       return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // トースト通知の追加
+  // --- Action Handlers ---
+
   const addToast = (type: 'success' | 'error', title: string, message: string) => {
     const id = Math.random().toString(36).substr(2, 9);
     const newNotification: NotificationItem = {
-        id, 
-        type, 
-        title, 
-        message, 
-        timestamp: Date.now(),
-        read: false 
+        id, type, title, message, timestamp: Date.now(), read: false 
     };
 
     setNotifications(prev => [newNotification, ...prev]);
-
     setToasts(prev => {
         const updated = [...prev, { id, type, title, message }];
-        // 最大3件まで表示
-        if (updated.length > 3) {
-            return updated.slice(updated.length - 3);
-        }
+        if (updated.length > 3) return updated.slice(updated.length - 3);
         return updated;
     });
-
-    // 5秒後に自動消去
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
-    }, 5000);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 5000);
   };
 
-  const clearNotifications = () => {
-      setNotifications([]);
-  };
+  const clearNotifications = () => setNotifications([]);
 
-  // --- Handlers (各レイヤーからのコールバック) ---
-  
-  // ユーザー作成
   const handleCreateUser = () => {
     const newUser: UserAccount = {
       id: `u${Date.now()}`,
-      address: `raid1${Math.random().toString(36).substring(7)}${Math.random().toString(36).substring(7)}${Math.random().toString(36).substring(7)}`,
+      address: `raid1${Math.random().toString(36).substring(7)}${Math.random().toString(36).substring(7)}`,
       balance: 0,
       role: 'client'
     };
     setUsers([...users, newUser]);
   };
 
-  // Faucet (資金給付)
   const handleFaucet = (targetId: string) => {
     const amount = 1000;
     const millionaire = systemAccounts.find(a => a.type === 'faucet_source');
-    
-    if (!millionaire) return;
-    if (millionaire.balance < amount) {
-        addToast('error', 'Faucetエラー', 'Millionaireアカウントの資金が枯渇しています。');
+    if (!millionaire || millionaire.balance < amount) {
+        addToast('error', 'Faucet Error', 'System pool is empty.');
         return;
     }
 
-    // ターゲットがユーザーの場合
     const userTarget = users.find(u => u.id === targetId);
     if (userTarget) {
         setUsers(users.map(u => u.id === targetId ? { ...u, balance: u.balance + amount } : u));
         setSystemAccounts(prev => prev.map(a => a.id === millionaire.id ? { ...a, balance: a.balance - amount } : a));
-        addToast('success', '送金成功', `${userTarget.address.substring(0,8)}... へ 1,000 TKN を送金しました。`);
+        addToast('success', 'Success', `Sent 1,000 TKN to ${userTarget.address.substring(0,8)}...`);
         return;
     }
 
-    // ターゲットがシステムアカウント（Relayerなど）の場合
     const sysTarget = systemAccounts.find(a => a.id === targetId);
     if (sysTarget) {
         setSystemAccounts(prev => prev.map(a => {
@@ -146,109 +121,87 @@ const App: React.FC = () => {
             if (a.id === targetId) return { ...a, balance: a.balance + amount };
             return a;
         }));
-        addToast('success', '補充成功', `${sysTarget.name} へ 1,000 TKN を補充しました。`);
+        addToast('success', 'Success', `Refilled 1,000 TKN to ${sysTarget.name}.`);
     }
   };
 
-  const handleDeleteUser = (id: string) => {
-    setUsers(users.filter(u => u.id !== id));
-  };
+  const handleDeleteUser = (id: string) => setUsers(users.filter(u => u.id !== id));
 
-  // プリセット保存
   const handleSavePreset = (name: string, config: ExperimentConfig, generatorState?: any) => {
       const existingIndex = presets.findIndex(s => s.name === name);
       const newPreset: ExperimentPreset = {
           id: existingIndex >= 0 ? presets[existingIndex].id : crypto.randomUUID(),
-          name,
-          config,
-          generatorState, // UI復元用の状態
-          lastModified: new Date().toISOString()
+          name, config, generatorState, lastModified: new Date().toISOString()
       };
-
       if (existingIndex >= 0) {
-          // 更新
-          const next = [...presets];
-          next[existingIndex] = newPreset;
-          setPresets(next);
-          addToast('success', '保存完了', `プリセット "${name}" を更新しました。`);
+          const next = [...presets]; next[existingIndex] = newPreset; setPresets(next);
+          addToast('success', 'Saved', `Preset "${name}" updated.`);
       } else {
-          // 新規作成
           setPresets([...presets, newPreset]);
-          addToast('success', '保存完了', `新しいプリセット "${name}" を保存しました。`);
+          addToast('success', 'Saved', `Preset "${name}" created.`);
       }
   };
 
-  const handleDeletePreset = (id: string) => {
-      setPresets(prev => prev.filter(s => s.id !== id));
-      addToast('success', '削除完了', 'プリセットを削除しました。');
-  };
-
-  const handleDeleteResult = (id: string) => {
-      setResults(results.filter(r => r.id !== id));
-      addToast('success', '削除完了', '実験結果データを削除しました。');
-  };
-
-  // 実験完了結果の登録
-  const handleRegisterResult = (result: ExperimentResult) => {
-      setResults(prev => [result, ...prev]);
-  };
+  const handleDeletePreset = (id: string) => { setPresets(prev => prev.filter(s => s.id !== id)); addToast('success', 'Deleted', 'Preset removed.'); };
+  const handleDeleteResult = (id: string) => { setResults(results.filter(r => r.id !== id)); addToast('success', 'Deleted', 'Result log removed.'); };
+  const handleRegisterResult = (result: ExperimentResult) => setResults(prev => [result, ...prev]);
 
   return (
-    <div className="h-screen overflow-hidden flex flex-col bg-slate-50 text-slate-900 font-sans selection:bg-blue-100 selection:text-blue-900">
+    <div className="h-screen overflow-hidden flex flex-col bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
       
-      {/* --- Header Area --- */}
-      <header className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between z-40 shadow-sm shrink-0">
-        <div className="flex items-center gap-3">
-           <div className="bg-blue-600 p-1.5 rounded-lg">
-             <LayoutDashboard className="text-white w-5 h-5" />
+      {/* --- Header --- */}
+      <header className="h-20 bg-white px-8 flex items-center justify-between z-40 shrink-0 border-b border-slate-100">
+        <div className="flex items-center gap-4">
+           <div className="bg-gradient-to-br from-blue-600 to-indigo-600 p-2.5 rounded-2xl shadow-lg shadow-blue-200">
+             <LayoutDashboard className="text-white w-6 h-6" />
            </div>
            <div>
-               <h1 className="font-bold text-lg tracking-tight text-slate-900 leading-none">RaidChain <span className="text-slate-400 font-light">WebUI</span></h1>
-               <div className="text-[10px] text-slate-500 font-mono leading-none mt-1">v2.4.0-rc1 • Cluster: minikube</div>
+               <h1 className="font-extrabold text-2xl tracking-tight text-slate-800 leading-none">RaidChain <span className="text-slate-400 font-light">WebUI</span></h1>
            </div>
         </div>
 
-        <div className="flex items-center gap-4">
-             {/* System Status Indicator */}
-             <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-50 rounded-full border border-slate-200">
-                 <div className={`w-2 h-2 rounded-full ${deployedNodeCount > 0 ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`}></div>
-                 <span className="text-xs font-medium text-slate-600">
+        <div className="flex items-center gap-6">
+             {/* Status Indicator */}
+             <div className="hidden md:flex items-center gap-3 px-4 py-2 bg-slate-50 rounded-full border border-slate-100">
+                 <div className={`w-2.5 h-2.5 rounded-full shadow-sm ${deployedNodeCount > 0 ? 'bg-emerald-500 shadow-emerald-200 animate-pulse' : 'bg-red-500 shadow-red-200'}`}></div>
+                 <span className="text-xs font-bold text-slate-600 uppercase tracking-wide">
                      {deployedNodeCount > 0 ? 'System Online' : 'System Offline'}
                  </span>
              </div>
 
-             {/* Notifications */}
+             {/* Notification Center */}
              <div className="relative" ref={notificationRef}>
                  <button 
-                    className="relative p-2 text-slate-400 hover:text-slate-600 transition-colors hover:bg-slate-100 rounded-full"
+                    className="relative p-3 text-slate-400 hover:text-slate-600 transition-all hover:bg-slate-100 rounded-2xl hover:shadow-sm active:scale-95"
                     onClick={() => setIsNotificationOpen(!isNotificationOpen)}
                  >
-                     <Bell className="w-5 h-5" />
+                     <Bell className="w-6 h-6" />
                      {notifications.filter(n => !n.read).length > 0 && (
-                         <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full ring-2 ring-white"></span>
+                         <span className="absolute top-2.5 right-2.5 w-2.5 h-2.5 bg-red-500 rounded-full ring-2 ring-white"></span>
                      )}
                  </button>
 
+                 {/* Dropdown */}
                  {isNotificationOpen && (
-                     <div className="absolute right-0 mt-2 w-80 bg-white rounded-xl shadow-xl border border-slate-100 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-                         <div className="px-4 py-3 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                             <h3 className="text-sm font-bold text-slate-700">Notifications</h3>
-                             <button onClick={clearNotifications} className="text-xs text-blue-600 hover:underline">Clear all</button>
+                     <div className="absolute right-0 mt-4 w-96 bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200 z-50">
+                         <div className="px-6 py-4 border-b border-slate-50 flex justify-between items-center bg-slate-50/50">
+                             <h3 className="font-bold text-slate-800">Notifications</h3>
+                             <button onClick={clearNotifications} className="text-xs font-bold text-blue-600 hover:text-blue-800">Clear All</button>
                          </div>
-                         <div className="max-h-80 overflow-y-auto">
+                         <div className="max-h-96 overflow-y-auto custom-scrollbar p-2 space-y-1">
                              {notifications.length === 0 ? (
-                                 <div className="p-8 text-center text-slate-400 text-sm">No notifications</div>
+                                 <div className="p-10 text-center text-slate-400 text-sm font-medium">No new notifications</div>
                              ) : (
                                  notifications.map(n => (
-                                     <div key={n.id} className="px-4 py-3 border-b border-slate-50 hover:bg-slate-50 transition-colors">
-                                         <div className="flex gap-3">
-                                             <div className={`mt-1 ${n.type === 'success' ? 'text-emerald-500' : 'text-red-500'}`}>
+                                     <div key={n.id} className="px-4 py-3 hover:bg-slate-50 rounded-2xl transition-colors cursor-default group">
+                                         <div className="flex gap-4 items-start">
+                                             <div className={`mt-1 p-1.5 rounded-full ${n.type === 'success' ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
                                                  {n.type === 'success' ? <CheckCircle className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
                                              </div>
-                                             <div>
-                                                 <div className="text-sm font-medium text-slate-800">{n.title}</div>
+                                             <div className="flex-1">
+                                                 <div className="text-sm font-bold text-slate-800">{n.title}</div>
                                                  <div className="text-xs text-slate-500 mt-0.5 leading-relaxed">{n.message}</div>
-                                                 <div className="text-[10px] text-slate-400 mt-1 text-right">
+                                                 <div className="text-[10px] text-slate-400 mt-2 font-medium text-right group-hover:text-slate-500">
                                                      {new Date(n.timestamp).toLocaleTimeString()}
                                                  </div>
                                              </div>
@@ -263,117 +216,123 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* --- Navigation & Main Content --- */}
+      {/* --- Main Container --- */}
       <div className="flex flex-1 overflow-hidden">
         
-        {/* Sidebar Nav (サイドバー) */}
-        <nav className="w-64 bg-white border-r border-slate-200 flex flex-col py-6 gap-1 z-30 shadow-[4px_0_24px_-12px_rgba(0,0,0,0.1)] shrink-0 overflow-y-auto">
-            <div className="px-6 mb-2 text-xs font-bold text-slate-400 uppercase tracking-wider">Main Menu</div>
+        {/* Sidebar */}
+        <nav className="w-72 bg-white flex flex-col py-8 px-4 gap-2 shrink-0 overflow-y-auto border-r border-slate-100">
+            <div className="px-4 mb-4 text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Navigation</div>
             {NAV_ITEMS.map(item => {
                 const isActive = activeLayer === item.id;
                 return (
                     <button
                         key={item.id}
                         onClick={() => setActiveLayer(item.id)}
-                        className={`relative mx-3 px-4 py-3 rounded-xl text-left transition-all duration-200 flex items-center gap-3 group ${
-                            isActive 
-                            ? 'bg-blue-50 text-blue-700 shadow-sm' 
-                            : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                        }`}
+                        className={`
+                            relative px-5 py-4 rounded-2xl text-left transition-all duration-300 flex items-center gap-4 group
+                            ${isActive 
+                                ? 'bg-indigo-50 text-indigo-700 shadow-sm scale-[1.02]' 
+                                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800 hover:scale-[1.01]'
+                            }
+                        `}
                     >
-                        {isActive && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-500 rounded-r-full"></div>}
-                        <item.icon className={`w-5 h-5 ${isActive ? 'text-blue-600' : 'text-slate-400 group-hover:text-slate-600'}`} />
-                        <div>
-                            <div className={`font-bold text-sm ${isActive ? 'text-blue-800' : 'text-slate-700'}`}>{item.label}</div>
-                            <div className="text-[10px] text-slate-400 font-medium">{item.subLabel}</div>
+                        <item.icon className={`w-6 h-6 transition-colors ${isActive ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-600'}`} />
+                        <div className="flex-1">
+                            <div className={`font-bold text-sm ${isActive ? 'text-indigo-900' : 'text-slate-700'}`}>{item.label}</div>
+                            <div className={`text-[10px] font-medium mt-0.5 transition-colors ${isActive ? 'text-indigo-400' : 'text-slate-400'}`}>{item.subLabel}</div>
                         </div>
+                        {isActive && <ChevronRight className="w-4 h-4 text-indigo-400" />}
                     </button>
                 );
             })}
             
-            <div className="mt-auto px-6 pt-6 border-t border-slate-100">
-                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                    <div className="flex items-center gap-2 mb-2">
-                        <Info className="w-4 h-4 text-blue-500" />
-                        <span className="text-xs font-bold text-slate-700">Cluster Info</span>
+            <div className="mt-auto pt-8 px-2">
+                <div className="bg-slate-900 p-5 rounded-3xl shadow-xl relative overflow-hidden group cursor-default">
+                    <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
+                        <Info className="w-16 h-16 text-white" />
                     </div>
-                    <div className="space-y-1">
-                        <div className="flex justify-between text-[10px]">
-                            <span className="text-slate-500">Provider</span>
-                            <span className="font-mono text-slate-700">Minikube</span>
-                        </div>
-                        <div className="flex justify-between text-[10px]">
-                            <span className="text-slate-500">K8s Ver</span>
-                            <span className="font-mono text-slate-700">v1.28.3</span>
-                        </div>
-                        <div className="flex justify-between text-[10px]">
-                            <span className="text-slate-500">Memory</span>
-                            <span className="font-mono text-slate-700">8192MB</span>
+                    <div className="relative z-10">
+                        <div className="text-xs font-bold text-slate-400 mb-2 uppercase tracking-wider">Cluster Info</div>
+                        <div className="space-y-1.5">
+                            <div className="flex justify-between text-xs">
+                                <span className="text-slate-500">Provider</span>
+                                <span className="font-bold text-slate-200">Minikube</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                                <span className="text-slate-500">Ver</span>
+                                <span className="font-bold text-slate-200">v1.28.3</span>
+                            </div>
+                            <div className="flex justify-between text-xs">
+                                <span className="text-slate-500">Memory</span>
+                                <span className="font-bold text-emerald-400">8192MB</span>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
         </nav>
 
-        {/* Main Viewport (メインコンテンツエリア) */}
+        {/* Content Area */}
         <main className="flex-1 bg-slate-50/50 relative overflow-hidden">
             
-            {/* Layer Container: 選択されたレイヤーを表示 */}
-            <div className="h-full w-full p-6 overflow-y-auto custom-scrollbar">
-                {activeLayer === AppLayer.MONITORING && <MonitoringLayer deployedNodeCount={deployedNodeCount} />}
-                
-                {activeLayer === AppLayer.DEPLOYMENT && (
-                    <DeploymentLayer 
-                        setDeployedNodeCount={setDeployedNodeCount} 
-                        deployedNodeCount={deployedNodeCount}
-                        setIsDockerBuilt={setIsDockerBuilt}
-                        isDockerBuilt={isDockerBuilt}
-                    />
-                )}
-                
-                {activeLayer === AppLayer.ECONOMY && (
-                    <EconomyLayer 
-                        users={users} 
-                        systemAccounts={systemAccounts} 
-                        onCreateUser={handleCreateUser} 
-                        onDeleteUser={handleDeleteUser}
-                        onFaucet={handleFaucet}
-                    />
-                )}
+            {/* Layer Render */}
+            <div className="h-full w-full p-8 overflow-y-auto custom-scrollbar">
+                <div className="max-w-[1600px] mx-auto h-full">
+                    {activeLayer === AppLayer.MONITORING && <MonitoringLayer deployedNodeCount={deployedNodeCount} />}
+                    
+                    {activeLayer === AppLayer.DEPLOYMENT && (
+                        <DeploymentLayer 
+                            setDeployedNodeCount={setDeployedNodeCount} 
+                            deployedNodeCount={deployedNodeCount}
+                            setIsDockerBuilt={setIsDockerBuilt}
+                            isDockerBuilt={isDockerBuilt}
+                        />
+                    )}
+                    
+                    {activeLayer === AppLayer.ECONOMY && (
+                        <EconomyLayer 
+                            users={users} 
+                            systemAccounts={systemAccounts} 
+                            onCreateUser={handleCreateUser} 
+                            onDeleteUser={handleDeleteUser}
+                            onFaucet={handleFaucet}
+                        />
+                    )}
 
-                {activeLayer === AppLayer.PRESET && (
-                    <PresetLayer 
-                        presets={presets}
-                        onDeletePreset={handleDeletePreset}
-                    />
-                )}
-                
-                {activeLayer === AppLayer.EXPERIMENT && (
-                    <ExperimentLayer 
-                        users={users}
-                        presets={presets}
-                        deployedNodeCount={deployedNodeCount}
-                        onRegisterResult={handleRegisterResult}
-                        onSavePreset={handleSavePreset}
-                        notify={addToast}
-                    />
-                )}
-                
-                {activeLayer === AppLayer.LIBRARY && <LibraryLayer results={results} onDeleteResult={handleDeleteResult} />}
+                    {activeLayer === AppLayer.PRESET && (
+                        <PresetLayer 
+                            presets={presets}
+                            onDeletePreset={handleDeletePreset}
+                        />
+                    )}
+                    
+                    {activeLayer === AppLayer.EXPERIMENT && (
+                        <ExperimentLayer 
+                            users={users}
+                            presets={presets}
+                            deployedNodeCount={deployedNodeCount}
+                            onRegisterResult={handleRegisterResult}
+                            onSavePreset={handleSavePreset}
+                            notify={addToast}
+                        />
+                    )}
+                    
+                    {activeLayer === AppLayer.LIBRARY && <LibraryLayer results={results} onDeleteResult={handleDeleteResult} />}
+                </div>
             </div>
 
-            {/* Toast Overlay (トースト通知) - Fixed at bottom left */}
-            <div className="fixed bottom-6 left-4 z-[60] flex flex-col gap-3 pointer-events-none w-60">
+            {/* Global Toasts */}
+            <div className="fixed bottom-8 left-8 z-[100] flex flex-col gap-4 pointer-events-none w-80">
                 {toasts.map(toast => (
-                    <div key={toast.id} className="bg-white rounded-lg shadow-xl border border-slate-200 p-4 w-full animate-in slide-in-from-left-10 fade-in duration-300 pointer-events-auto flex items-start gap-3">
-                        <div className={`mt-0.5 ${toast.type === 'success' ? 'text-emerald-500' : 'text-red-500'}`}>
+                    <div key={toast.id} className="bg-white rounded-2xl shadow-2xl border border-slate-100 p-5 w-full animate-in slide-in-from-left-10 fade-in duration-500 pointer-events-auto flex items-start gap-4 ring-1 ring-black/5">
+                        <div className={`mt-0.5 p-2 rounded-full ${toast.type === 'success' ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
                             {toast.type === 'success' ? <CheckCircle className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
                         </div>
                         <div className="flex-1">
                             <h4 className="text-sm font-bold text-slate-800">{toast.title}</h4>
-                            <p className="text-xs text-slate-500 mt-1 leading-relaxed">{toast.message}</p>
+                            <p className="text-xs text-slate-500 mt-1 leading-relaxed font-medium">{toast.message}</p>
                         </div>
-                        <button onClick={() => setToasts(t => t.filter(i => i.id !== toast.id))} className="text-slate-400 hover:text-slate-600">
+                        <button onClick={() => setToasts(t => t.filter(i => i.id !== toast.id))} className="text-slate-300 hover:text-slate-500 transition-colors">
                             <X className="w-4 h-4" />
                         </button>
                     </div>
