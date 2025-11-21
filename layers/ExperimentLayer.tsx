@@ -547,7 +547,7 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ activeExperiment, use
                                 onClick={() => setUploadType('Real')}
                                 className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${uploadType === 'Real' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                             >
-                                実ファイルアップロード
+                                ファイルアップロード
                             </button>
                         </div>
 

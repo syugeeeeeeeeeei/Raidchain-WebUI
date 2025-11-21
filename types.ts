@@ -4,6 +4,7 @@ export enum AppLayer {
   MONITORING = 'monitoring',
   DEPLOYMENT = 'deployment',
   ECONOMY = 'economy',
+  SCENARIO = 'scenario', // Added Scenario Layer
   EXPERIMENT = 'experiment',
   LIBRARY = 'library',
 }
