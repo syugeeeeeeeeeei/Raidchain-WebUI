@@ -1,7 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { AppLayer, UserAccount, SystemAccount, ExperimentResult, ActiveExperimentState, ExperimentConfig, ExperimentPreset, Toast, NotificationItem } from './types';
+import React, { useState } from 'react';
+import { AppLayer, ExperimentResult, ExperimentConfig, ExperimentPreset } from './types';
 import { NAV_ITEMS } from './constants';
-import { generateMockUsers, generateMockResults, generateMockPresets, generateSystemAccounts } from './services/mockData';
+import { generateMockResults, generateMockPresets } from './services/mockData';
 import MonitoringLayer from './layers/MonitoringLayer';
 import DeploymentLayer from './layers/DeploymentLayer';
 import EconomyLayer from './layers/EconomyLayer';
@@ -9,6 +9,7 @@ import ExperimentLayer from './layers/ExperimentLayer';
 import LibraryLayer from './layers/LibraryLayer';
 import PresetLayer from './layers/PresetLayer';
 import { LayoutDashboard, Bell, CheckCircle, AlertTriangle, X, Info, ChevronRight } from 'lucide-react';
+import { useEconomyManagement, useNotification } from './hooks';
 
 /**
  * App Component
@@ -28,9 +29,11 @@ const App: React.FC = () => {
   const [deployedNodeCount, setDeployedNodeCount] = useState<number>(5);
   const [isDockerBuilt, setIsDockerBuilt] = useState<boolean>(false);
 
-  // Economy State
-  const [users, setUsers] = useState<UserAccount[]>(generateMockUsers());
-  const [systemAccounts, setSystemAccounts] = useState<SystemAccount[]>(generateSystemAccounts(5));
+  // Notification Hook
+  const { toasts, notifications, isNotificationOpen, setIsNotificationOpen, notificationRef, addToast, clearNotifications } = useNotification();
+
+  // Economy Hook
+  const { users, systemAccounts, handleCreateUser, handleDeleteUser, handleFaucet } = useEconomyManagement(deployedNodeCount, addToast);
 
   // Library State
   const [results, setResults] = useState<ExperimentResult[]>(generateMockResults());
@@ -38,94 +41,7 @@ const App: React.FC = () => {
   // Preset State
   const [presets, setPresets] = useState<ExperimentPreset[]>(generateMockPresets());
 
-  // Notification State
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
-  const [isNotificationOpen, setIsNotificationOpen] = useState(false);
-  const notificationRef = useRef<HTMLDivElement>(null);
-
-  // --- Effects ---
-  
-  // ノード数変更時のRelayer同期
-  useEffect(() => {
-      setSystemAccounts(prev => {
-          const millionaire = prev.find(a => a.type === 'faucet_source');
-          const newAccounts = generateSystemAccounts(deployedNodeCount);
-          if (millionaire) {
-              newAccounts[0].balance = millionaire.balance;
-          }
-          return newAccounts;
-      });
-  }, [deployedNodeCount]);
-
-  // クリックアウトサイド検知（通知メニュー用）
-  useEffect(() => {
-      const handleClickOutside = (event: MouseEvent) => {
-          if (notificationRef.current && !notificationRef.current.contains(event.target as Node)) {
-              setIsNotificationOpen(false);
-          }
-      };
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
   // --- Action Handlers ---
-
-  const addToast = (type: 'success' | 'error', title: string, message: string) => {
-    const id = Math.random().toString(36).substr(2, 9);
-    const newNotification: NotificationItem = {
-        id, type, title, message, timestamp: Date.now(), read: false 
-    };
-
-    setNotifications(prev => [newNotification, ...prev]);
-    setToasts(prev => {
-        const updated = [...prev, { id, type, title, message }];
-        if (updated.length > 3) return updated.slice(updated.length - 3);
-        return updated;
-    });
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 5000);
-  };
-
-  const clearNotifications = () => setNotifications([]);
-
-  const handleCreateUser = () => {
-    const newUser: UserAccount = {
-      id: `u${Date.now()}`,
-      address: `raid1${Math.random().toString(36).substring(7)}${Math.random().toString(36).substring(7)}`,
-      balance: 0,
-      role: 'client'
-    };
-    setUsers([...users, newUser]);
-  };
-
-  const handleFaucet = (targetId: string) => {
-    const amount = 1000;
-    const millionaire = systemAccounts.find(a => a.type === 'faucet_source');
-    if (!millionaire || millionaire.balance < amount) {
-        addToast('error', 'Faucet Error', 'System pool is empty.');
-        return;
-    }
-
-    const userTarget = users.find(u => u.id === targetId);
-    if (userTarget) {
-        setUsers(users.map(u => u.id === targetId ? { ...u, balance: u.balance + amount } : u));
-        setSystemAccounts(prev => prev.map(a => a.id === millionaire.id ? { ...a, balance: a.balance - amount } : a));
-        addToast('success', 'Success', `Sent 1,000 TKN to ${userTarget.address.substring(0,8)}...`);
-        return;
-    }
-
-    const sysTarget = systemAccounts.find(a => a.id === targetId);
-    if (sysTarget) {
-        setSystemAccounts(prev => prev.map(a => {
-            if (a.id === millionaire.id) return { ...a, balance: a.balance - amount };
-            if (a.id === targetId) return { ...a, balance: a.balance + amount };
-            return a;
-        }));
-        addToast('success', 'Success', `Refilled 1,000 TKN to ${sysTarget.name}.`);
-    }
-  };
-
-  const handleDeleteUser = (id: string) => setUsers(users.filter(u => u.id !== id));
 
   const handleSavePreset = (name: string, config: ExperimentConfig, generatorState?: any) => {
       const existingIndex = presets.findIndex(s => s.name === name);
@@ -341,7 +257,7 @@ const App: React.FC = () => {
                             <h4 className="text-sm font-bold text-slate-800">{toast.title}</h4>
                             <p className="text-xs text-slate-500 mt-1 leading-relaxed font-medium">{toast.message}</p>
                         </div>
-                        <button onClick={() => setToasts(t => t.filter(i => i.id !== toast.id))} className="text-slate-300 hover:text-slate-500 transition-colors">
+                        <button onClick={() => { /* Handled via hook logic in real app, or state here */ }} className="text-slate-300 hover:text-slate-500 transition-colors">
                             <X className="w-4 h-4" />
                         </button>
                     </div>

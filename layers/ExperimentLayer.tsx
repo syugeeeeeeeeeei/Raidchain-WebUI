@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { AllocatorStrategy, TransmitterStrategy, ExperimentConfig, UserAccount, ExperimentPreset, ExperimentScenario, ExperimentResult } from '../types';
-import { Settings2, Box, Upload, Zap, List, CheckCircle2, AlertCircle, PlayCircle, Save, RotateCcw, Loader2, X, ChevronDown, FolderOpen, FileCode, Info, ChevronUp, Lock, Folder, ArrowLeft, Bookmark, Clock, Database, Puzzle, CheckCircle } from 'lucide-react';
+import { Settings2, Box, Upload, Zap, List, CheckCircle2, AlertCircle, PlayCircle, Save, RotateCcw, Loader2, X, ChevronDown, FolderOpen, FileCode, Info, ChevronUp, Lock, ArrowLeft, Bookmark, CheckCircle, Folder, Clock, Database, Puzzle } from 'lucide-react';
 import { Card, Modal, LogViewer, Badge } from '../components/Shared';
+import { useResizerPanel, useFileUploadTree, useScenarioExecution } from '../hooks';
 
 interface ExperimentLayerProps {
     users: UserAccount[];
@@ -117,9 +118,8 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
   const [isPresetPanelOpen, setIsPresetPanelOpen] = useState(false);
   const [newPresetName, setNewPresetName] = useState("");
 
-  // Results Panel State
-  const [isResultsPanelOpen, setIsResultsPanelOpen] = useState(false);
-  const [panelHeight, setPanelHeight] = useState(320);
+  // Resizable Panel Hook
+  const { isOpen: isResultsPanelOpen, setIsOpen: setIsResultsPanelOpen, height: panelHeight, panelRef, resizerRef } = useResizerPanel(320, 100, 0.8);
   
   // Basic Settings
   const [projectName, setProjectName] = useState("複合パラメータテスト");
@@ -146,22 +146,36 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
   const [selectedAllocators, setSelectedAllocators] = useState<Set<AllocatorStrategy>>(new Set([AllocatorStrategy.ROUND_ROBIN]));
   const [selectedTransmitters, setSelectedTransmitters] = useState<Set<TransmitterStrategy>>(new Set([TransmitterStrategy.ONE_BY_ONE]));
 
-  // File Upload State
-  const [uploadStats, setUploadStats] = useState<{count: number, sizeMB: number, tree: any, treeOpen: boolean}>({ count: 0, sizeMB: 0, tree: null, treeOpen: true });
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // File Upload Hook
+  const { uploadStats, setUploadStats, fileInputRef, processFiles } = useFileUploadTree(notify);
+  
+  // Handle file process with state update for fixed data size
+  const handleFileProcess = async (files: File[]) => {
+      const sizeMB = await processFiles(files);
+      setDataSizeParams(prev => ({ ...prev, mode: 'fixed', fixed: sizeMB }));
+  };
 
-  // Execution State
-  const [scenarios, setScenarios] = useState<ExperimentScenario[]>([]); 
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isExecutionRunning, setIsExecutionRunning] = useState(false);
+  // Scenario Execution Hook
+  const { scenarios, isGenerating, isExecutionRunning, generateScenarios, executeScenarios, reprocessCondition, handleRecalculateAll } = useScenarioExecution(notify, onRegisterResult);
+
+  const handleGenerateClick = () => {
+      generateScenarios({
+          projectName,
+          users,
+          selectedUserId,
+          mode,
+          dataSizeParams,
+          chunkSizeParams,
+          selectedAllocators,
+          selectedTransmitters,
+          selectedChains,
+          setIsOpen: setIsResultsPanelOpen
+      });
+  };
 
   // Modals
   const [errorModal, setErrorModal] = useState<{isOpen: boolean, id: string, reason: string}>({isOpen: false, id: '', reason: ''});
   const [logModal, setLogModal] = useState<{isOpen: boolean, scenario: ExperimentScenario | null}>({isOpen: false, scenario: null});
-
-  // Refs for resizing
-  const panelRef = useRef<HTMLDivElement>(null);
-  const resizerRef = useRef<HTMLDivElement>(null);
 
   // --- Initial Setup & Effects ---
   useEffect(() => {
@@ -172,85 +186,6 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
       }
       if (users.length > 0 && !selectedUserId) setSelectedUserId(users[0].id);
   }, [deployedNodeCount, users]);
-
-  // Panel Resizing Logic
-  useEffect(() => {
-      const resizer = resizerRef.current;
-      if (!resizer) return;
-      
-      const handleMouseDown = (e: MouseEvent) => { 
-          e.preventDefault(); 
-          document.addEventListener('mousemove', handleMouseMove); 
-          document.addEventListener('mouseup', handleMouseUp); 
-          document.body.style.cursor = 'row-resize'; 
-      };
-      
-      const handleMouseMove = (e: MouseEvent) => {
-          const newHeight = window.innerHeight - e.clientY;
-          if (newHeight > 80 && newHeight < window.innerHeight * 0.8) {
-              setPanelHeight(newHeight);
-              if (!isResultsPanelOpen && newHeight > 100) setIsResultsPanelOpen(true);
-          }
-      };
-      
-      const handleMouseUp = () => {
-          document.removeEventListener('mousemove', handleMouseMove); 
-          document.removeEventListener('mouseup', handleMouseUp); 
-          document.body.style.cursor = '';
-          if (panelRef.current && panelRef.current.clientHeight < 120) setIsResultsPanelOpen(false);
-      };
-      
-      resizer.addEventListener('mousedown', handleMouseDown);
-      return () => { resizer.removeEventListener('mousedown', handleMouseDown); };
-  }, [isResultsPanelOpen]);
-
-  // --- Helper Functions ---
-
-  // Build File Tree (Simplified for demo)
-  const buildTreeFromProcessedFiles = (files: any[], fileCount: number, totalSize: number) => {
-      const root: any = { name: 'root', children: {}, type: 'folder', size: 0 };
-      files.forEach(file => {
-          const parts = file.path.split('/').filter((p: string) => p.length > 0);
-          let current = root;
-          parts.forEach((part: string, index: number) => {
-              if (index === parts.length - 1) current.children[part] = { name: part, type: 'file', size: file.size };
-              else {
-                  if (!current.children[part]) current.children[part] = { name: part, children: {}, type: 'folder', size: 0 };
-                  current = current.children[part];
-              }
-          });
-      });
-      setUploadStats({ count: fileCount, sizeMB: parseFloat((totalSize / (1024 * 1024)).toFixed(2)), tree: root, treeOpen: true });
-      const sizeMB = parseFloat((totalSize / (1024 * 1024)).toFixed(2));
-      setDataSizeParams(prev => ({ ...prev, mode: 'fixed', fixed: sizeMB }));
-      notify('success', '解析完了', `${fileCount}ファイルを解析しました。(${sizeMB}MB)`);
-  };
-
-  // Process Files
-  const processFiles = async (fileList: File[]) => {
-      const processedFiles: any[] = [];
-      let totalSize = 0;
-      let fileCount = 0;
-      const JSZip = (window as any).JSZip;
-      for (const file of fileList) {
-          if (file.name.endsWith('.zip') && JSZip) {
-              try {
-                  const arrayBuffer = await new Promise<ArrayBuffer>((res, rej) => { const r = new FileReader(); r.onload = e => e.target?.result ? res(e.target.result as ArrayBuffer) : rej(); r.readAsArrayBuffer(file); });
-                  const zip = new JSZip();
-                  const zipContent = await zip.loadAsync(arrayBuffer);
-                  const entries = Object.keys(zipContent.files).map(name => zipContent.files[name]);
-                  for (const zipEntry of entries) {
-                       if (!zipEntry.dir) {
-                          const size = (zipEntry as any)._data?.uncompressedSize || 0;
-                          processedFiles.push({ path: file.name + '/' + zipEntry.name, name: zipEntry.name.split('/').pop(), size: size });
-                          totalSize += size; fileCount++;
-                       }
-                  }
-              } catch { processedFiles.push({ path: file.name, name: file.name, size: file.size }); totalSize += file.size; fileCount++; }
-          } else { processedFiles.push({ path: file.webkitRelativePath || file.name, name: file.name, size: file.size }); totalSize += file.size; fileCount++; }
-      }
-      buildTreeFromProcessedFiles(processedFiles, fileCount, totalSize);
-  };
 
   // Render Tree
   const renderTreeNodes = (node: any) => (
@@ -273,177 +208,6 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
           <div className="pl-2">{Object.values(node.children || {}).map((child: any, i) => <div key={i}>{renderTreeNodes(child)}</div>)}</div>
       </div>
   );
-
-  // --- Logic: Generate Scenarios ---
-  const generateScenarios = async () => {
-      setIsGenerating(true); 
-      const newScenarios: ExperimentScenario[] = [];
-      
-      const getDataSizes = () => {
-          if (mode === 'upload') return [dataSizeParams.fixed];
-          if (dataSizeParams.mode === 'fixed') return [dataSizeParams.fixed];
-          const res = [];
-          for(let v=dataSizeParams.range.start; v<=dataSizeParams.range.end; v+=Math.max(1, dataSizeParams.range.step)) res.push(parseFloat(v.toFixed(2)));
-          return res.length ? res : [dataSizeParams.range.start];
-      };
-      const getChunkSizes = () => {
-          if (chunkSizeParams.mode === 'fixed') return [chunkSizeParams.fixed];
-          const res = [];
-          for(let v=chunkSizeParams.range.start; v<=chunkSizeParams.range.end; v+=Math.max(1, chunkSizeParams.range.step)) res.push(v);
-          return res.length ? res : [chunkSizeParams.range.start];
-      };
-
-      const dataSizes = getDataSizes();
-      const chunkSizes = getChunkSizes();
-      
-      let idCounter = 1;
-      const cleanName = projectName.replace(/[^a-zA-Z0-9_]/g, '') || 'Exp';
-      const timestamp = new Date().toISOString().slice(0,10).replace(/-/g,'');
-      const userBudget = users.find(u => u.id === selectedUserId)?.balance || 0;
-
-      for(const ds of dataSizes) for(const cs of chunkSizes) for(const al of selectedAllocators) for(const tr of selectedTransmitters) {
-          newScenarios.push({
-              id: idCounter++, 
-              uniqueId: `${cleanName}_${timestamp}_${String(idCounter).padStart(3,'0')}`,
-              dataSize: ds, 
-              chunkSize: cs, 
-              allocator: al, 
-              transmitter: tr, 
-              chains: selectedChains.size, 
-              targetChains: Array.from(selectedChains),
-              budgetLimit: userBudget, 
-              cost: 0, 
-              status: 'PENDING', 
-              failReason: null, 
-              progress: 0, 
-              logs: []
-          });
-      }
-
-      setScenarios(newScenarios);
-      if (!isResultsPanelOpen) setIsResultsPanelOpen(true);
-
-      const processed = [...newScenarios];
-      for(const c of processed) {
-          await new Promise(r => setTimeout(r, 50)); 
-          const cost = (c.dataSize * c.chunkSize * c.chains) / 1000;
-          
-          if (Math.random() < 0.1) { 
-              c.status = 'FAIL'; 
-              c.failReason = 'System timeout: 一時的なシステムエラーが発生しました。'; 
-              c.cost = cost; 
-          } else if (cost > c.budgetLimit * 0.8) {
-              if (Math.random() < 0.3) {
-                  c.status = 'FAIL'; 
-                  c.failReason = `Insufficient balance: コスト (${cost.toFixed(2)} TKN) が予算 (${c.budgetLimit.toFixed(2)} TKN) を超える可能性があります。`; 
-                  c.cost = cost; 
-              } else {
-                  c.status = 'READY'; 
-                  c.cost = parseFloat(cost.toFixed(2)); 
-              }
-          } else { 
-              c.status = 'READY'; 
-              c.cost = parseFloat(cost.toFixed(2)); 
-          }
-          setScenarios([...processed]); 
-      }
-
-      notify(processed.some(s => s.status === 'FAIL') ? 'error' : 'success', '試算完了', `${processed.length}件のシナリオを作成しました。`);
-      setIsGenerating(false);
-  };
-
-  // Execute Scenarios
-  const executeScenarios = async () => {
-      setIsExecutionRunning(true); 
-      notify('success', '実行開始', '実行可能(READY)なシナリオの処理を開始します...');
-      
-      const currentScenarios = [...scenarios];
-      let successCount = 0; let failedCount = 0;
-      
-      for(let i=0; i<currentScenarios.length; i++) {
-          if(currentScenarios[i].status === 'READY') {
-              currentScenarios[i].status = 'RUNNING'; 
-              currentScenarios[i].logs.push('[INFO] Experiment Started.');
-              setScenarios([...currentScenarios]);
-              
-              await new Promise(r => setTimeout(r, 500)); 
-              
-              const success = Math.random() > 0.1;
-              currentScenarios[i].status = success ? 'COMPLETE' : 'FAIL';
-              currentScenarios[i].logs.push(success ? '[SUCCESS] Completed.' : '[ERROR] Connection Lost.');
-              
-              if (!success) { 
-                  currentScenarios[i].failReason = 'Connection error: 実行中にネットワーク接続が切れました。'; 
-                  failedCount++; 
-              } else { 
-                  successCount++; 
-                  onRegisterResult({
-                      id: `res-${currentScenarios[i].uniqueId}`, 
-                      scenarioName: `${projectName} #${currentScenarios[i].id}`, 
-                      executedAt: new Date().toISOString(),
-                      status: 'SUCCESS', 
-                      dataSizeMB: currentScenarios[i].dataSize, 
-                      chunkSizeKB: currentScenarios[i].chunkSize,
-                      totalTxCount: Math.floor((currentScenarios[i].dataSize * 1024) / currentScenarios[i].chunkSize), 
-                      allocator: currentScenarios[i].allocator, 
-                      transmitter: currentScenarios[i].transmitter, 
-                      targetChainCount: currentScenarios[i].chains, 
-                      usedChains: currentScenarios[i].targetChains,
-                      uploadTimeMs: 1234, 
-                      downloadTimeMs: 567, 
-                      throughputBps: 1000000, 
-                      logs: currentScenarios[i].logs
-                  });
-              }
-              setScenarios([...currentScenarios]);
-          }
-      }
-      notify(failedCount > 0 ? 'error' : 'success', '一括実行完了', `${successCount}件成功, ${failedCount}件失敗`);
-      setIsExecutionRunning(false);
-  };
-
-  // Single Reprocess
-  const reprocessCondition = async (id: number) => {
-      const idx = scenarios.findIndex(s => s.id === id);
-      if(idx === -1) return;
-      const updated = [...scenarios];
-      updated[idx].status = 'PENDING';
-      updated[idx].failReason = null;
-      setScenarios(updated);
-      await new Promise(r => setTimeout(r, 500));
-      const c = updated[idx];
-      const cost = (c.dataSize * c.chunkSize * c.chains) / 1000;
-      c.status = 'READY';
-      c.cost = parseFloat(cost.toFixed(2));
-      setScenarios([...updated]);
-  };
-
-  // Bulk Recalculate
-  const handleRecalculateAll = async () => {
-      const failedIndices = scenarios.map((s, i) => s.status === 'FAIL' ? i : -1).filter(i => i !== -1);
-      if (failedIndices.length === 0) return;
-
-      notify('success', '再試算開始', `${failedIndices.length}件のシナリオを再試算します`);
-      const updated = [...scenarios];
-      
-      // Reset status first
-      failedIndices.forEach(i => {
-          updated[i].status = 'PENDING';
-          updated[i].failReason = null;
-      });
-      setScenarios([...updated]);
-
-      // Process
-      for (const i of failedIndices) {
-          await new Promise(r => setTimeout(r, 200));
-          const c = updated[i];
-          const cost = (c.dataSize * c.chunkSize * c.chains) / 1000;
-          c.status = 'READY'; // Assuming success for re-calc
-          c.cost = parseFloat(cost.toFixed(2));
-          setScenarios([...updated]);
-      }
-      notify('success', '再試算完了', '全てのシナリオが実行可能になりました');
-  };
 
   // --- Preset Handlers ---
   const handleSave = () => {
@@ -560,9 +324,9 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
                                             onClick={() => fileInputRef.current?.click()} 
                                             onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('drag-active'); }} 
                                             onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('drag-active'); }} 
-                                            onDrop={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('drag-active'); if(e.dataTransfer.files) processFiles(Array.from(e.dataTransfer.files)); }}
+                                            onDrop={(e) => { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('drag-active'); if(e.dataTransfer.files) handleFileProcess(Array.from(e.dataTransfer.files)); }}
                                         >
-                                            <input type="file" ref={fileInputRef} className="hidden" multiple onChange={e => e.target.files && processFiles(Array.from(e.target.files))} {...({webkitdirectory: ""} as any)} />
+                                            <input type="file" ref={fileInputRef} className="hidden" multiple onChange={e => e.target.files && handleFileProcess(Array.from(e.target.files))} {...({webkitdirectory: ""} as any)} />
                                             <div className="bg-white w-20 h-20 rounded-full shadow-lg mb-4 flex items-center justify-center text-primary-indigo group-hover:scale-110 transition-transform duration-300">
                                                 <Upload className="w-8 h-8" />
                                             </div>
@@ -748,7 +512,7 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
                                 </div>
 
                                 <div className="pt-4 pb-2">
-                                    <button onClick={generateScenarios} disabled={isGenerating} className="w-full bg-primary-green hover:bg-emerald-500 text-white font-bold py-4 px-8 rounded-2xl shadow-lg shadow-emerald-200 transition-all transform hover:-translate-y-1 active:translate-y-0 flex items-center justify-center text-xl tracking-wide disabled:opacity-50 disabled:cursor-not-allowed">
+                                    <button onClick={handleGenerateClick} disabled={isGenerating} className="w-full bg-primary-green hover:bg-emerald-500 text-white font-bold py-4 px-8 rounded-2xl shadow-lg shadow-emerald-200 transition-all transform hover:-translate-y-1 active:translate-y-0 flex items-center justify-center text-xl tracking-wide disabled:opacity-50 disabled:cursor-not-allowed">
                                         {isGenerating ? <Loader2 className="w-6 h-6 animate-spin mr-3" /> : <Zap className="w-6 h-6 mr-3" />} シナリオを作成
                                     </button>
                                 </div>
@@ -818,7 +582,7 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
                                 </button>
                             )}
                             <button 
-                                onClick={executeScenarios} 
+                                onClick={() => executeScenarios(projectName)} 
                                 disabled={scenarios.length === 0 || isExecutionRunning || successCount === 0} 
                                 className="bg-gray-300 text-white px-6 py-2.5 rounded-xl font-bold shadow-sm flex items-center disabled:opacity-50 data-[ready=true]:bg-primary-indigo data-[ready=true]:hover:bg-indigo-700 data-[ready=true]:hover:shadow-md transition-all transform active:scale-95" 
                                 data-ready={successCount > 0 && !isExecutionRunning}

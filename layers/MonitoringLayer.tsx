@@ -1,11 +1,11 @@
-
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import TopologyGraph from '../components/TopologyGraph';
 import { generateMockNodes } from '../services/mockData';
 import { NodeStatus } from '../types';
-import { Activity, Box, Network, Zap, ChevronUp, ChevronLeft, ArrowLeft, X, Monitor } from 'lucide-react';
-import { Badge, StatusBadge, PageHeader, TableStyles } from '../components/Shared';
+import { Activity, Zap, ChevronUp, ChevronLeft, X, Monitor } from 'lucide-react';
+import { Badge, PageHeader } from '../components/Shared';
+import { useResizerPanel } from '../hooks';
 
 interface MonitoringLayerProps {
     deployedNodeCount: number;
@@ -23,11 +23,9 @@ const MonitoringLayer: React.FC<MonitoringLayerProps> = ({ deployedNodeCount }) 
 
   // UI State
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
-  const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
-  const [bottomPanelHeight, setBottomPanelHeight] = useState(320);
   
-  const panelRef = useRef<HTMLDivElement>(null);
-  const resizerRef = useRef<HTMLDivElement>(null);
+  // Custom Hook for Resizing
+  const { isOpen: isBottomPanelOpen, setIsOpen: setIsBottomPanelOpen, height: bottomPanelHeight, panelRef, resizerRef } = useResizerPanel(320, 100, 0.8);
 
   // モックデータの定期更新エフェクト
   useEffect(() => {
@@ -51,37 +49,6 @@ const MonitoringLayer: React.FC<MonitoringLayerProps> = ({ deployedNodeCount }) 
     }, 1000);
     return () => clearInterval(interval);
   }, [deployedNodeCount]);
-
-  // Bottom Panel Resizing Logic
-  useEffect(() => {
-      const resizer = resizerRef.current;
-      if (!resizer) return;
-      
-      const handleMouseDown = (e: MouseEvent) => { 
-          e.preventDefault(); 
-          document.addEventListener('mousemove', handleMouseMove); 
-          document.addEventListener('mouseup', handleMouseUp); 
-          document.body.style.cursor = 'row-resize'; 
-      };
-      
-      const handleMouseMove = (e: MouseEvent) => {
-          const newHeight = window.innerHeight - e.clientY;
-          if (newHeight > 80 && newHeight < window.innerHeight * 0.8) {
-              setBottomPanelHeight(newHeight);
-              if (!isBottomPanelOpen && newHeight > 100) setIsBottomPanelOpen(true);
-          }
-      };
-      
-      const handleMouseUp = () => {
-          document.removeEventListener('mousemove', handleMouseMove); 
-          document.removeEventListener('mouseup', handleMouseUp); 
-          document.body.style.cursor = '';
-          if (panelRef.current && panelRef.current.clientHeight < 120) setIsBottomPanelOpen(false);
-      };
-      
-      resizer.addEventListener('mousedown', handleMouseDown);
-      return () => { resizer.removeEventListener('mousedown', handleMouseDown); };
-  }, [isBottomPanelOpen]);
 
   return (
     <div className="flex h-full w-full overflow-hidden relative text-gray-800">
