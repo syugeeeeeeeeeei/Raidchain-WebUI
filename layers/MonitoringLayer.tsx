@@ -46,7 +46,8 @@ const MonitoringLayer: React.FC<MonitoringLayerProps> = ({ setDeployedNodeCount 
                 />
             </div>
 
-            <div className="flex-1 overflow-auto p-6 pt-0 pb-32 custom-scrollbar">
+            {/* Main Graph Area: Resizes securely using flex and hidden overflow */}
+            <div className="flex-1 p-6 pt-0 pb-32 flex items-center justify-center overflow-hidden">
                 <TopologyGraph nodes={nodes} />
             </div>
 
