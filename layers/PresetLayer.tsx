@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { ExperimentPreset } from '../types';
-import { Trash2, FileText, Clock, Settings2, X, Database, Puzzle, RotateCcw, ChevronRight } from 'lucide-react';
+import { Trash2, FileText, Clock, Settings2, X, Database, Puzzle } from 'lucide-react';
 
 interface PresetLayerProps {
     presets: ExperimentPreset[];

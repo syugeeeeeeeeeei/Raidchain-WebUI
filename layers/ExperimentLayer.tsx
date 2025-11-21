@@ -24,7 +24,7 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
   const [mode, setMode] = useState<'virtual' | 'upload'>('virtual');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isResultsPanelOpen, setIsResultsPanelOpen] = useState(false);
-  const [panelHeight, setPanelHeight] = useState(320); // Default height
+  const [panelHeight, setPanelHeight] = useState(320);
 
   // --- Form State ---
   const [projectName, setProjectName] = useState("複合パラメータテスト");
@@ -53,7 +53,7 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
   const [isGenerating, setIsGenerating] = useState(false);
   const [isExecutionRunning, setIsExecutionRunning] = useState(false);
 
-  // Preset Input (Formerly Scenario)
+  // Preset Input
   const [newPresetName, setNewPresetName] = useState("");
 
   // Modals
@@ -149,51 +149,64 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
       notify('success', '解析完了', `${fileCount}ファイルを解析しました。(${sizeMB}MB)`);
   };
 
+  const readFileAsArrayBuffer = (file: File): Promise<ArrayBuffer> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            if (e.target?.result) resolve(e.target.result as ArrayBuffer);
+            else reject(new Error("File read failed"));
+        };
+        reader.onerror = () => reject(new Error("File read error"));
+        reader.readAsArrayBuffer(file);
+    });
+  };
+
   const processFiles = async (fileList: File[]) => {
       const processedFiles: any[] = [];
       let totalSize = 0;
       let fileCount = 0;
 
-      // Access JSZip from window (Added via script tag in index.html)
+      // Access JSZip from window
       const JSZip = (window as any).JSZip;
 
       for (const file of fileList) {
           if (file.name.endsWith('.zip') && JSZip) {
               try {
+                  // Explicitly read file as ArrayBuffer to prevent permission issues
+                  const arrayBuffer = await readFileAsArrayBuffer(file);
                   const zip = new JSZip();
-                  const zipContent = await zip.loadAsync(file);
-                  let zipFileCount = 0;
-                  // JSZip loadAsync returns promise, need to wait
-                  // ForEach in JSZip is synchronous after load
-                  // Convert to array of promises to handle async map properly if needed, 
-                  // but structure parsing here is simple enough.
-                  // We need to iterate keys of zipContent.files
-                  const zipKeys = Object.keys(zipContent.files);
-                  for (const key of zipKeys) {
-                      const zipEntry = zipContent.files[key];
+                  const zipContent = await zip.loadAsync(arrayBuffer);
+                  
+                  // JSZip forEach is synchronous
+                  zipContent.forEach((relativePath: string, zipEntry: any) => {
                       if (!zipEntry.dir) {
-                        // _data is internal, use uncompressedSize safe property if available or get it
-                        // JSZip 3.x: zipEntry._data.uncompressedSize might be internal.
-                        // Better to rely on parsing if possible, but for mockup we use a simple size estimation or access internal if needed.
-                        // For this requirement, we assume standard JSZip behavior or fallback.
-                        const size = (zipEntry as any)._data ? (zipEntry as any)._data.uncompressedSize : 0;
-                        processedFiles.push({ path: file.name + '/' + key, name: key.split('/').pop(), size });
-                        totalSize += size;
-                        zipFileCount++;
+                          // Use internal _data.uncompressedSize if available (common in JSZip v3)
+                          // or fallback to 0 if we cannot determine without full extraction
+                          const size = zipEntry._data?.uncompressedSize || 0;
+                          processedFiles.push({ 
+                              path: file.name + '/' + relativePath, 
+                              name: relativePath.split('/').pop(), 
+                              size: size 
+                          });
+                          totalSize += size;
+                          fileCount++;
                       }
-                  }
-                  fileCount += zipFileCount;
+                  });
               } catch (err) {
-                  console.error("ZIP error", err);
+                  console.error("ZIP Error:", err);
                   notify('error', 'ZIP展開エラー', `ファイル ${file.name} の展開に失敗しました。単一ファイルとして扱います。`);
+                  // Fallback to treating as single file
                   processedFiles.push({ path: file.name, name: file.name, size: file.size });
                   totalSize += file.size;
                   fileCount++;
               }
           } else {
               // Normal file or Folder via webkitdirectory
-              // webkitRelativePath is set if uploaded via folder input, else use name
-              processedFiles.push({ path: file.webkitRelativePath || file.name, name: file.name, size: file.size });
+              processedFiles.push({ 
+                  path: file.webkitRelativePath || file.name, 
+                  name: file.name, 
+                  size: file.size 
+              });
               totalSize += file.size;
               fileCount++;
           }
@@ -345,8 +358,10 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
               if (!success) {
                   currentScenarios[i].failReason = 'Connection error: 実行中にネットワーク接続が切れました。';
                   failedCount++;
+                  notify('error', '実行エラー', `ID: ${currentScenarios[i].id} が失敗しました。`);
               } else {
                   successCount++;
+                  notify('success', '実行完了', `ID: ${currentScenarios[i].id} が成功しました。`);
               }
               
               setScenarios([...currentScenarios]);
@@ -376,9 +391,9 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
       }
       
       if (failedCount > 0) {
-           notify('error', '実行完了 (一部失敗)', `${successCount}件成功, ${failedCount}件失敗`);
+           notify('error', '一括実行完了', `${successCount}件成功, ${failedCount}件失敗`);
       } else {
-           notify('success', '実行完了', `${successCount}件のシナリオが正常に完了しました。`);
+           notify('success', '一括実行完了', `全${successCount}件のシナリオが正常に完了しました。`);
       }
       setIsExecutionRunning(false);
   };
@@ -432,11 +447,12 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
           setSelectedUserId(gs.accountValue);
           setDataSizeParams(gs.dataSize);
           setChunkSizeParams(gs.chunkSize);
-          setSelectedAllocators(new Set(gs.allocators));
-          setSelectedTransmitters(new Set(gs.transmitters));
-          const validChains = new Set(gs.selectedChains.filter((c: string) => {
+          setSelectedAllocators(new Set(gs.allocators as AllocatorStrategy[]));
+          setSelectedTransmitters(new Set(gs.transmitters as TransmitterStrategy[]));
+          const validChains = new Set<string>(gs.selectedChains.filter((c: string) => {
+            // Basic check to ensure chain exists in current deployment
             const idx = parseInt(c.split('-')[1]);
-            return idx < deployedNodeCount;
+            return !isNaN(idx) && idx < deployedNodeCount;
           }));
           setSelectedChains(validChains);
           setMode(gs.uploadType === 'Virtual' ? 'virtual' : 'upload');
@@ -516,7 +532,7 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
                                         <Upload className="w-8 h-8" />
                                     </div>
                                     <p className="text-xl font-bold text-gray-700 pointer-events-none">フォルダまたはファイルをドロップ</p>
-                                    <p className="text-sm text-gray-400 mt-2 pointer-events-none font-medium">※自動で構造解析されます</p>
+                                    <p className="text-sm text-gray-400 mt-2 pointer-events-none font-medium">※自動で構造解析されます (ZIP対応)</p>
                                 </div>
 
                                 {uploadStats.tree && (
@@ -795,7 +811,7 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
                             <div className="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center mr-3 text-primary-indigo">
                                 <List className="w-5 h-5" />
                             </div>
-                            生成結果
+                            生成結果 (シナリオ)
                             <span className="ml-3 bg-primary-indigo text-white text-sm font-bold px-2.5 py-0.5 rounded-full shadow-sm shadow-indigo-200">{scenarios.length}</span>
                         </h2>
                         <div className="text-base text-gray-600 ml-8 font-medium">
@@ -1049,7 +1065,7 @@ const ExperimentLayer: React.FC<ExperimentLayerProps> = ({ users, presets, deplo
                             <div className="text-slate-600 italic">No logs available yet...</div>
                         ) : (
                             logModal.scenario.logs.map((line, i) => (
-                                <div key={i} className="mb-1 border-l-2 border-slate-700 pl-3 hover:bg-slate-800/50 hover:border-blue-500 transition-colors">
+                                <div key={i} className="mb-1 border-l-2 border-slate-700 pl-3 hover:bg-slate-800/50 hover:border-blue-50 transition-colors">
                                     <span className="text-slate-500 text-xs mr-3">{new Date().toLocaleTimeString()}</span>
                                     {line}
                                 </div>
