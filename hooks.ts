@@ -1,6 +1,38 @@
-import { useState, useEffect, useRef, useMemo, Dispatch, SetStateAction } from 'react';
-import { ExperimentScenario, ExperimentResult, NodeStatus, UserAccount, SystemAccount, FilterCondition, SortConfig, Toast, NotificationItem, ExperimentConfig, AllocatorStrategy, TransmitterStrategy } from './types';
-import { generateMockUsers, generateSystemAccounts, generateMockNodes } from './services/mockData';
+
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { ExperimentScenario, ExperimentResult, NodeStatus, UserAccount, SystemAccount, FilterCondition, SortConfig, Toast, NotificationItem, AllocatorStrategy, TransmitterStrategy, MonitoringUpdate, PacketEvent, MempoolInfo } from './types';
+import { VirtualSocket, mockApi } from './services/mockBackend';
+
+// --- 0. useWebSocket ---
+export const useWebSocket = <T>(url: string, onMessage?: (data: T) => void) => {
+    const [data, setData] = useState<T | null>(null);
+    const socketRef = useRef<VirtualSocket | null>(null);
+    
+    // Use a ref to store the latest onMessage callback.
+    // This prevents the socket subscription from being recreated when the callback changes,
+    // while ensuring that the latest callback (with fresh closure variables) is always invoked.
+    const onMessageRef = useRef(onMessage);
+    useEffect(() => {
+        onMessageRef.current = onMessage;
+    }, [onMessage]);
+
+    useEffect(() => {
+        const socket = new VirtualSocket(url);
+        socketRef.current = socket;
+
+        socket.onmessage = (event) => {
+            const parsed = JSON.parse(event.data);
+            setData(parsed);
+            if (onMessageRef.current) onMessageRef.current(parsed);
+        };
+
+        return () => {
+            socket.close();
+        };
+    }, [url]); 
+
+    return { data, socket: socketRef.current };
+};
 
 // --- 1. useResizerPanel ---
 export const useResizerPanel = (initialHeight: number = 320, minHeight: number = 100, maxHeightRatio: number = 0.8) => {
@@ -50,181 +82,111 @@ export const useScenarioExecution = (
     const [scenarios, setScenarios] = useState<ExperimentScenario[]>([]);
     const [isGenerating, setIsGenerating] = useState(false);
     const [isExecutionRunning, setIsExecutionRunning] = useState(false);
+    const [executionId, setExecutionId] = useState<string | null>(null);
 
-    const generateScenarios = async (params: {
-        projectName: string;
-        users: UserAccount[];
-        selectedUserId: string;
-        mode: 'virtual' | 'upload';
-        dataSizeParams: { mode: 'fixed' | 'range', fixed: number, range: { start: number, end: number, step: number } };
-        chunkSizeParams: { mode: 'fixed' | 'range', fixed: number, range: { start: number, end: number, step: number } };
-        selectedAllocators: Set<AllocatorStrategy>;
-        selectedTransmitters: Set<TransmitterStrategy>;
-        selectedChains: Set<string>;
-        setIsOpen: (isOpen: boolean) => void;
-    }) => {
+    // WebSocket for Experiment Progress
+    useWebSocket<{ executionId: string, scenarioId?: number, status?: string, log?: string, type?: string }>(
+        '/ws/experiment/progress',
+        (msg) => {
+            if (msg.executionId !== executionId) return;
+            
+            if (msg.type === 'ALL_COMPLETE') {
+                setIsExecutionRunning(false);
+                notify('success', 'All Scenarios Processed', 'Batch execution finished.');
+                return;
+            }
+
+            setScenarios(prev => prev.map(s => {
+                if (s.id === msg.scenarioId) {
+                    const nextLogs = msg.log ? [...s.logs, msg.log] : s.logs;
+                    return {
+                        ...s,
+                        status: (msg.status as any) || s.status,
+                        logs: nextLogs,
+                        failReason: msg.status === 'FAIL' ? msg.log : s.failReason
+                    };
+                }
+                return s;
+            }));
+        }
+    );
+
+    const generateScenarios = async (params: any) => {
         setIsGenerating(true);
+        await new Promise(r => setTimeout(r, 500)); // Sim generation delay
+
         const newScenarios: ExperimentScenario[] = [];
-
-        const getDataSizes = () => {
-            if (params.mode === 'upload') return [params.dataSizeParams.fixed];
-            if (params.dataSizeParams.mode === 'fixed') return [params.dataSizeParams.fixed];
-            const res = [];
-            for (let v = params.dataSizeParams.range.start; v <= params.dataSizeParams.range.end; v += Math.max(1, params.dataSizeParams.range.step)) res.push(parseFloat(v.toFixed(2)));
-            return res.length ? res : [params.dataSizeParams.range.start];
-        };
-        const getChunkSizes = () => {
-            if (params.chunkSizeParams.mode === 'fixed') return [params.chunkSizeParams.fixed];
-            const res = [];
-            for (let v = params.chunkSizeParams.range.start; v <= params.chunkSizeParams.range.end; v += Math.max(1, params.chunkSizeParams.range.step)) res.push(v);
-            return res.length ? res : [params.chunkSizeParams.range.start];
-        };
-
-        const dataSizes = getDataSizes();
-        const chunkSizes = getChunkSizes();
-
         let idCounter = 1;
         const cleanName = params.projectName.replace(/[^a-zA-Z0-9_]/g, '') || 'Exp';
-        const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-        const userBudget = params.users.find(u => u.id === params.selectedUserId)?.balance || 0;
 
-        for (const ds of dataSizes) for (const cs of chunkSizes) for (const al of params.selectedAllocators) for (const tr of params.selectedTransmitters) {
-            newScenarios.push({
-                id: idCounter++,
-                uniqueId: `${cleanName}_${timestamp}_${String(idCounter).padStart(3, '0')}`,
-                dataSize: ds,
-                chunkSize: cs,
-                allocator: al,
-                transmitter: tr,
-                chains: params.selectedChains.size,
-                targetChains: Array.from(params.selectedChains),
-                budgetLimit: userBudget,
-                cost: 0,
-                status: 'PENDING',
-                failReason: null,
-                progress: 0,
-                logs: []
-            });
+        // Helper to generate range array
+        const getRange = (p: any) => {
+            if (p.mode === 'fixed') return [p.fixed];
+            const res = [];
+            const start = Number(p.range.start);
+            const end = Number(p.range.end);
+            const step = Number(p.range.step);
+            
+            if (step <= 0 || start > end) return [start]; // Fallback
+            for (let i = start; i <= end; i += step) {
+                res.push(i);
+            }
+            return res;
+        };
+
+        const dataSizes = getRange(params.dataSizeParams);
+        const chunkSizes = getRange(params.chunkSizeParams);
+        const allocators = Array.from(params.selectedAllocators as Set<AllocatorStrategy>);
+        const transmitters = Array.from(params.selectedTransmitters as Set<TransmitterStrategy>);
+
+        // Cartesian Product Generation
+        // DataSize x ChunkSize x Allocators x Transmitters
+        for (const ds of dataSizes) {
+            for (const cs of chunkSizes) {
+                for (const alloc of allocators) {
+                    for (const trans of transmitters) {
+                        newScenarios.push({
+                            id: idCounter++,
+                            uniqueId: `${cleanName}_${Date.now()}_${idCounter}`,
+                            dataSize: ds,
+                            chunkSize: cs,
+                            allocator: alloc,
+                            transmitter: trans,
+                            chains: params.selectedChains.size || 1,
+                            targetChains: Array.from(params.selectedChains),
+                            budgetLimit: 1000,
+                            cost: parseFloat((ds * 0.5 + (alloc === AllocatorStrategy.AVAILABLE ? 5 : 0)).toFixed(2)),
+                            status: 'READY',
+                            failReason: null,
+                            progress: 0,
+                            logs: []
+                        });
+                    }
+                }
+            }
         }
 
         setScenarios(newScenarios);
         params.setIsOpen(true);
-
-        const processed = [...newScenarios];
-        for (const c of processed) {
-            await new Promise(r => setTimeout(r, 50));
-            const cost = (c.dataSize * c.chunkSize * c.chains) / 1000;
-
-            if (Math.random() < 0.1) {
-                c.status = 'FAIL';
-                c.failReason = 'System timeout: 一時的なシステムエラーが発生しました。';
-                c.cost = cost;
-            } else if (cost > c.budgetLimit * 0.8) {
-                if (Math.random() < 0.3) {
-                    c.status = 'FAIL';
-                    c.failReason = `Insufficient balance: コスト (${cost.toFixed(2)} TKN) が予算 (${c.budgetLimit.toFixed(2)} TKN) を超える可能性があります。`;
-                    c.cost = cost;
-                } else {
-                    c.status = 'READY';
-                    c.cost = parseFloat(cost.toFixed(2));
-                }
-            } else {
-                c.status = 'READY';
-                c.cost = parseFloat(cost.toFixed(2));
-            }
-            setScenarios([...processed]);
-        }
-
-        notify(processed.some(s => s.status === 'FAIL') ? 'error' : 'success', '試算完了', `${processed.length}件のシナリオを作成しました。`);
         setIsGenerating(false);
+        notify('success', 'Scenarios Generated', `${newScenarios.length} scenarios created based on parameter ranges.`);
     };
 
     const executeScenarios = async (projectName: string) => {
         setIsExecutionRunning(true);
-        notify('success', '実行開始', '実行可能(READY)なシナリオの処理を開始します...');
-
-        const currentScenarios = [...scenarios];
-        let successCount = 0; let failedCount = 0;
-
-        for (let i = 0; i < currentScenarios.length; i++) {
-            if (currentScenarios[i].status === 'READY') {
-                currentScenarios[i].status = 'RUNNING';
-                currentScenarios[i].logs.push('[INFO] Experiment Started.');
-                setScenarios([...currentScenarios]);
-
-                await new Promise(r => setTimeout(r, 500));
-
-                const success = Math.random() > 0.1;
-                currentScenarios[i].status = success ? 'COMPLETE' : 'FAIL';
-                currentScenarios[i].logs.push(success ? '[SUCCESS] Completed.' : '[ERROR] Connection Lost.');
-
-                if (!success) {
-                    currentScenarios[i].failReason = 'Connection error: 実行中にネットワーク接続が切れました。';
-                    failedCount++;
-                } else {
-                    successCount++;
-                    onRegisterResult({
-                        id: `res-${currentScenarios[i].uniqueId}`,
-                        scenarioName: `${projectName} #${currentScenarios[i].id}`,
-                        executedAt: new Date().toISOString(),
-                        status: 'SUCCESS',
-                        dataSizeMB: currentScenarios[i].dataSize,
-                        chunkSizeKB: currentScenarios[i].chunkSize,
-                        totalTxCount: Math.floor((currentScenarios[i].dataSize * 1024) / currentScenarios[i].chunkSize),
-                        allocator: currentScenarios[i].allocator,
-                        transmitter: currentScenarios[i].transmitter,
-                        targetChainCount: currentScenarios[i].chains,
-                        usedChains: currentScenarios[i].targetChains,
-                        uploadTimeMs: 1234,
-                        downloadTimeMs: 567,
-                        throughputBps: 1000000,
-                        logs: currentScenarios[i].logs
-                    });
-                }
-                setScenarios([...currentScenarios]);
-            }
-        }
-        notify(failedCount > 0 ? 'error' : 'success', '一括実行完了', `${successCount}件成功, ${failedCount}件失敗`);
-        setIsExecutionRunning(false);
+        notify('success', 'Job Queued', 'Scenarios sent to execution queue.');
+        
+        const readyScenarios = scenarios.filter(s => s.status === 'READY');
+        const res = await mockApi.experiment.run(readyScenarios);
+        setExecutionId(res.executionId);
     };
 
-    const reprocessCondition = async (id: number) => {
-        const idx = scenarios.findIndex(s => s.id === id);
-        if (idx === -1) return;
-        const updated = [...scenarios];
-        updated[idx].status = 'PENDING';
-        updated[idx].failReason = null;
-        setScenarios(updated);
-        await new Promise(r => setTimeout(r, 500));
-        const c = updated[idx];
-        const cost = (c.dataSize * c.chunkSize * c.chains) / 1000;
-        c.status = 'READY';
-        c.cost = parseFloat(cost.toFixed(2));
-        setScenarios([...updated]);
+    const reprocessCondition = (id: number) => {
+         setScenarios(prev => prev.map(s => s.id === id ? {...s, status: 'READY', failReason: null} : s));
     };
-
-    const handleRecalculateAll = async () => {
-        const failedIndices = scenarios.map((s, i) => s.status === 'FAIL' ? i : -1).filter(i => i !== -1);
-        if (failedIndices.length === 0) return;
-
-        notify('success', '再試算開始', `${failedIndices.length}件のシナリオを再試算します`);
-        const updated = [...scenarios];
-
-        failedIndices.forEach(i => {
-            updated[i].status = 'PENDING';
-            updated[i].failReason = null;
-        });
-        setScenarios([...updated]);
-
-        for (const i of failedIndices) {
-            await new Promise(r => setTimeout(r, 200));
-            const c = updated[i];
-            const cost = (c.dataSize * c.chunkSize * c.chains) / 1000;
-            c.status = 'READY';
-            c.cost = parseFloat(cost.toFixed(2));
-            setScenarios([...updated]);
-        }
-        notify('success', '再試算完了', '全てのシナリオが実行可能になりました');
+    
+    const handleRecalculateAll = () => {
+         setScenarios(prev => prev.map(s => s.status === 'FAIL' ? {...s, status: 'READY', failReason: null} : s));
     };
 
     return { scenarios, isGenerating, isExecutionRunning, generateScenarios, executeScenarios, reprocessCondition, handleRecalculateAll };
@@ -240,49 +202,47 @@ export const useDeploymentControl = (
     const [isBuilding, setIsBuilding] = useState(false);
     const [isDeploying, setIsDeploying] = useState(false);
     const [logs, setLogs] = useState<string[]>([]);
+    const [activeJobId, setActiveJobId] = useState<string | null>(null);
 
+    // Sync local scale count when prop updates (from monitoring source of truth)
     useEffect(() => { setScaleCount(deployedNodeCount); }, [deployedNodeCount]);
 
-    const addLog = (msg: string) => setLogs(prev => [...prev, `[${new Date().toLocaleTimeString('ja-JP')}] ${msg}`]);
-
-    const handleBuild = () => {
-        if (isBuilding) return;
-        setLogs([]); setIsBuilding(true);
-        addLog(">> Starting Docker Build for targets: [DataChain, MetaChain]...");
-        let step = 0;
-        const interval = setInterval(() => {
-            step++;
-            if (step === 1) addLog("Building context: 124.5MB transferred.");
-            if (step === 2) addLog("Step 1/5 : FROM golang:1.22-alpine as builder");
-            if (step === 3) addLog("Step 2/5 : WORKDIR /app");
-            if (step === 4) addLog("Step 3/5 : COPY . .");
-            if (step === 5) addLog("Step 4/5 : RUN go build -o datachain ./cmd/datachain");
-            if (step === 6) {
-                addLog("Successfully built image 'raidchain/node:latest'");
-                setIsBuilding(false); setIsDockerBuilt(true); clearInterval(interval);
+    // Listen for logs
+    useWebSocket<{ jobId: string, type: string, message?: string }>('/ws/deployment/logs', (data) => {
+        if (data.jobId === activeJobId) {
+            if (data.type === 'log' && data.message) {
+                setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${data.message}`]);
+            } else if (data.type === 'complete') {
+                setIsBuilding(false);
+                setIsDockerBuilt(true);
             }
-        }, 800);
+        }
+    });
+
+    const handleBuild = async () => {
+        if (isBuilding) return;
+        setLogs([]);
+        setIsBuilding(true);
+        const res = await mockApi.deployment.build();
+        setActiveJobId(res.jobId);
     };
 
-    const handleDeploy = () => {
+    const handleDeploy = async () => {
         if (isDeploying) return;
-        setLogs([]); setIsDeploying(true);
-        addLog(`>> Starting Helm Upgrade (Scale: ${scaleCount})...`);
-        setTimeout(() => {
-            addLog("Release \"raidchain-core\" does not exist. Installing it now.");
-            addLog("Manifest rendered. Applying to namespace 'default'.");
-            addLog(`[K8s] Service/datachain-svc created.`);
-            for (let i = 0; i < scaleCount; i++) setTimeout(() => addLog(`[K8s] Pod/datachain-${i} scheduled.`), i * 500);
-            setTimeout(() => {
-                addLog(">> Deployment Sync Completed. System Healthy.");
-                setDeployedNodeCount(scaleCount); setIsDeploying(false);
-            }, scaleCount * 500 + 1000);
-        }, 1000);
+        setLogs(prev => [...prev, '>> Initiating Helm Upgrade...']);
+        setIsDeploying(true);
+        await mockApi.deployment.scale(scaleCount);
+        // Note: In a real app we'd wait for pod ready via WS, here we assume API returns when accepted
+        setDeployedNodeCount(scaleCount);
+        setLogs(prev => [...prev, '>> Deployment request accepted.']);
+        setIsDeploying(false);
     };
 
-    const handleReset = () => {
-        setLogs([]); addLog(">> Executing Helm Uninstall..."); addLog("Removing PVCs..."); addLog("Cleaned up resources.");
-        setIsDockerBuilt(false); setDeployedNodeCount(0);
+    const handleReset = async () => {
+        setLogs([]);
+        await mockApi.deployment.reset();
+        setIsDockerBuilt(false);
+        setDeployedNodeCount(0);
     };
 
     return { scaleCount, setScaleCount, isBuilding, isDeploying, logs, handleBuild, handleDeploy, handleReset };
@@ -293,57 +253,36 @@ export const useEconomyManagement = (
     deployedNodeCount: number,
     addToast: (type: 'success' | 'error', title: string, message: string) => void
 ) => {
-    const [users, setUsers] = useState<UserAccount[]>(generateMockUsers());
-    const [systemAccounts, setSystemAccounts] = useState<SystemAccount[]>(generateSystemAccounts(deployedNodeCount));
+    const [users, setUsers] = useState<UserAccount[]>([]);
+    const [systemAccounts, setSystemAccounts] = useState<SystemAccount[]>([]);
 
-    // NodeCount変更時のRelayer同期
-    useEffect(() => {
-        setSystemAccounts(prev => {
-            const millionaire = prev.find(a => a.type === 'faucet_source');
-            const newAccounts = generateSystemAccounts(deployedNodeCount);
-            if (millionaire) {
-                newAccounts[0].balance = millionaire.balance;
-            }
-            return newAccounts;
-        });
-    }, [deployedNodeCount]);
-
-    const handleCreateUser = () => {
-        const newUser: UserAccount = {
-            id: `u${Date.now()}`,
-            address: `raid1${Math.random().toString(36).substring(7)}${Math.random().toString(36).substring(7)}`,
-            balance: 0,
-            role: 'client'
-        };
-        setUsers([...users, newUser]);
+    const refresh = async () => {
+        const res = await mockApi.economy.getUsers();
+        setUsers(res.users);
+        setSystemAccounts(res.system);
     };
 
-    const handleDeleteUser = (id: string) => setUsers(users.filter(u => u.id !== id));
+    useEffect(() => { refresh(); }, [deployedNodeCount]); // Refresh when infra changes (relayers might change)
 
-    const handleFaucet = (targetId: string) => {
-        const amount = 1000;
-        const millionaire = systemAccounts.find(a => a.type === 'faucet_source');
-        if (!millionaire || millionaire.balance < amount) {
-            addToast('error', 'Faucet Error', 'System pool is empty.');
-            return;
-        }
+    const handleCreateUser = async () => {
+        await mockApi.economy.createUser();
+        refresh();
+        addToast('success', 'Created', 'New user account generated.');
+    };
 
-        const userTarget = users.find(u => u.id === targetId);
-        if (userTarget) {
-            setUsers(users.map(u => u.id === targetId ? { ...u, balance: u.balance + amount } : u));
-            setSystemAccounts(prev => prev.map(a => a.id === millionaire.id ? { ...a, balance: a.balance - amount } : a));
-            addToast('success', 'Success', `Sent 1,000 TKN to ${userTarget.address.substring(0, 8)}...`);
-            return;
-        }
+    const handleDeleteUser = async (id: string) => {
+        await mockApi.economy.deleteUser(id);
+        refresh();
+        addToast('success', 'Deleted', 'User account removed.');
+    };
 
-        const sysTarget = systemAccounts.find(a => a.id === targetId);
-        if (sysTarget) {
-            setSystemAccounts(prev => prev.map(a => {
-                if (a.id === millionaire.id) return { ...a, balance: a.balance - amount };
-                if (a.id === targetId) return { ...a, balance: a.balance + amount };
-                return a;
-            }));
-            addToast('success', 'Success', `Refilled 1,000 TKN to ${sysTarget.name}.`);
+    const handleFaucet = async (targetId: string) => {
+        try {
+            const res = await mockApi.economy.faucet(targetId, 1000);
+            refresh();
+            addToast('success', 'Faucet', `Sent 1000 TKN to ${res.targetName}`);
+        } catch (e) {
+            addToast('error', 'Failed', 'Faucet transaction failed (Pool empty?)');
         }
     };
 
@@ -368,28 +307,19 @@ export const useTableFilterSort = (data: ExperimentResult[], initialSort: SortCo
 
     const processedData = useMemo(() => {
         let processed = [...data];
-        
-        // Search (Naive implementation assuming objects have string properties)
         if (searchTerm) {
             const lowerTerm = searchTerm.toLowerCase();
-            processed = processed.filter(item => 
-                Object.values(item as any).some(val => String(val).toLowerCase().includes(lowerTerm))
-            );
+            processed = processed.filter(item => Object.values(item as any).some(val => String(val).toLowerCase().includes(lowerTerm)));
         }
-
-        // Filter
         if (filters.length > 0) {
             processed = processed.filter(item => filters.every(cond => String((item as any)[cond.key]) === cond.value));
         }
-
-        // Sort
         processed.sort((a, b) => {
             const av = (a as any)[sortConfig.key];
             const bv = (b as any)[sortConfig.key];
             if (av === undefined || bv === undefined) return 0;
             return av < bv ? (sortConfig.direction === 'asc' ? -1 : 1) : (sortConfig.direction === 'asc' ? 1 : -1);
         });
-
         return processed;
     }, [data, searchTerm, filters, sortConfig]);
 
@@ -415,9 +345,7 @@ export const useNotification = () => {
 
     const addToast = (type: 'success' | 'error', title: string, message: string) => {
         const id = Math.random().toString(36).substr(2, 9);
-        const newNotification: NotificationItem = {
-            id, type, title, message, timestamp: Date.now(), read: false
-        };
+        const newNotification: NotificationItem = { id, type, title, message, timestamp: Date.now(), read: false };
 
         setNotifications(prev => [newNotification, ...prev]);
         setToasts(prev => {
@@ -451,10 +379,10 @@ export const useFileUploadTree = (notify: (type: 'success' | 'error', title: str
                 }
             });
         });
-        setUploadStats({ count: fileCount, sizeMB: parseFloat((totalSize / (1024 * 1024)).toFixed(2)), tree: root, treeOpen: true });
         const sizeMB = parseFloat((totalSize / (1024 * 1024)).toFixed(2));
-        notify('success', '解析完了', `${fileCount}ファイルを解析しました。(${sizeMB}MB)`);
-        return sizeMB; // Return size for updating state
+        setUploadStats({ count: fileCount, sizeMB, tree: root, treeOpen: true });
+        notify('success', 'Files Parsed', `${fileCount} files processed locally (${sizeMB}MB).`);
+        return sizeMB;
     };
 
     const processFiles = async (fileList: File[]) => {
@@ -462,22 +390,48 @@ export const useFileUploadTree = (notify: (type: 'success' | 'error', title: str
         let totalSize = 0;
         let fileCount = 0;
         const JSZip = (window as any).JSZip;
+
         for (const file of fileList) {
-            if (file.name.endsWith('.zip') && JSZip) {
+            if (file.name.endsWith('.zip') || file.type === 'application/zip' || file.type === 'application/x-zip-compressed') {
                 try {
-                    const arrayBuffer = await new Promise<ArrayBuffer>((res, rej) => { const r = new FileReader(); r.onload = e => e.target?.result ? res(e.target.result as ArrayBuffer) : rej(); r.readAsArrayBuffer(file); });
-                    const zip = new JSZip();
-                    const zipContent = await zip.loadAsync(arrayBuffer);
-                    const entries = Object.keys(zipContent.files).map(name => zipContent.files[name]);
+                    const zip = await JSZip.loadAsync(file);
+                    // Zip内のファイルを列挙
+                    const entries = Object.keys(zip.files).map(name => zip.files[name]);
+                    
                     for (const zipEntry of entries) {
                         if (!zipEntry.dir) {
-                            const size = (zipEntry as any)._data?.uncompressedSize || 0;
-                            processedFiles.push({ path: file.name + '/' + zipEntry.name, name: zipEntry.name.split('/').pop(), size: size });
-                            totalSize += size; fileCount++;
+                            // ディレクトリ構造を維持するためのパス
+                            const path = zipEntry.name;
+                            // ファイル名はパスの末尾
+                            const name = path.split('/').pop() || path;
+                            
+                            // Calculate actual uncompressed size
+                            let size = 0;
+                            try {
+                                const blob = await zipEntry.async("blob");
+                                size = blob.size;
+                            } catch (e) {
+                                console.warn("Failed to read zip entry size", e);
+                            }
+
+                            processedFiles.push({ 
+                                path: path, 
+                                name: name, 
+                                size: size 
+                            });
+                            fileCount++;
+                            totalSize += size;
                         }
                     }
-                } catch { processedFiles.push({ path: file.name, name: file.name, size: file.size }); totalSize += file.size; fileCount++; }
-            } else { processedFiles.push({ path: file.webkitRelativePath || file.name, name: file.name, size: file.size }); totalSize += file.size; fileCount++; }
+                } catch (e) {
+                    console.error("Zip error:", e);
+                    notify('error', 'Zip Extraction Failed', `Could not extract ${file.name}`);
+                }
+            } else {
+                processedFiles.push({ path: file.webkitRelativePath || file.name, name: file.name, size: file.size });
+                totalSize += file.size;
+                fileCount++;
+            }
         }
         return buildTreeFromProcessedFiles(processedFiles, fileCount, totalSize);
     };
