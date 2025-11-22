@@ -14,31 +14,39 @@ if (!rootElement) {
   throw new Error("Could not find root element to mount to");
 }
 
-// --- MSWのセットアップ: レンダリングをブロックしないように修正 ---
-// 開発モードでのみMSWのワーカーを起動します。
-if (process.env.NODE_ENV === 'development') {
-  // workerモジュールを動的インポートします。
-  // このPromiseの結果を待たずに、すぐにアプリケーションの描画に進みます。
-  import('./mocks/browser').then(({ worker }) => {
-    // worker.start()を実行し、サービスワーカーの登録と起動をバックグラウンドで行います。
-    // onUnhandledRequest: 'bypass'により、モックされていないリクエストはそのままバックエンド（またはVite dev server）に流れます。
-    worker.start({
+// --- MSWのセットアップ関数: workerを起動するロジックを追加 ---
+async function enableMocking() {
+  // NOTE: 開発モードで実行されることを前提とし、モックを有効化します。
+
+  try {
+    // 同階層のmocks/browser.tsからworkerをインポート
+    const { worker } = await import('./mocks/browser');
+
+    // MSWを起動。未処理のリクエストはそのままバイパスする設定。
+    await worker.start({
       onUnhandledRequest: 'bypass',
-    }).then(() => {
-      console.log("MSW worker started successfully.");
-    }).catch(error => {
-      console.error("MSW worker failed to start:", error);
+      serviceWorker: {
+        // index.htmlで読み込まれるサービスワーカーのパスを指定
+        url: '/mockServiceWorker.js'
+      }
     });
-  }).catch(error => {
-    console.error("Failed to import MSW worker:", error);
-  });
+    console.log("MSW worker started successfully.");
+  } catch (error) {
+    console.error("Failed to start MSW worker:", error);
+    // エラーが発生してもアプリケーションは続行できるようにします。
+  }
 }
 // -----------------------------
 
-// MSWの起動完了を待たずに、すぐにレンダリングを開始します。
-const root = ReactDOM.createRoot(rootElement);
-root.render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+// MSWの起動を待機してからレンダリングを実行
+enableMocking().then(() => {
+  const root = ReactDOM.createRoot(rootElement);
+  root.render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+}).catch(error => {
+  // MSWの起動失敗とは別に、致命的なエラーが発生した場合のハンドリング
+  console.error("Failed to initialize the application:", error);
+});
